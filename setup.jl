@@ -7,18 +7,35 @@ using QuanticsTCI
 using TensorCrossInterpolation
 import QuanticsGrids as QG
 
+"""-----------------------------------------------------------------------------------------------
+Helper functions
+-----------------------------------------------------------------------------------------------"""
 
-"""-------------------------------
-Stuff we need in the next sections 
--------------------------------"""
-
-#Create (cartesian) gaussian basis
-function createBasis(c1::String, pos1::Vector{Float64}, c2::String, pos2::Vector{Float64})
-    BS = BasisSet("sto-3g", """
-    $c1        $(pos1[1])        $(pos1[2])        $(pos1[3])
-    $c2        $(pos2[1])        $(pos2[2])        $(pos2[3])""", spherical=false)
-    return BS  
+function parametersPhi(BS::BasisSet, n::Int64)::Tuple{Int64, Int64, Matrix, Vector, Vector{Int64}}
+    i,li = getAtomL(BS, n)
+    coef1 = BS.basis[i].coef
+    exp1 = BS.basis[i].exp
+    A = hcat(coef1,exp1)
+    R1 = BS.basis[i].atom.xyz
+    l1 = permute(BS.basis[i].l)[li,:]
+    return (i,li,A,R1,l1)
 end
+
+function compareResults(num::Float64, ana::Float64)
+    println("Numerical value:\t",num,"\tAnalytical value:\t",ana,"\t Difference:\t", num-ana)
+end
+
+function compareResults2(avg::Float64, max::Float64)
+   println("Average diviation:\t", avg, "\nMaximum diviation:\t", max) 
+end
+
+function generateOutputName(input_name::String, R::Int64, tol)
+    return input_name*"_$(R)_$(tol)"*".png"
+end
+
+"""-----------------------------------------------------------------------------------------------
+Permutation
+-----------------------------------------------------------------------------------------------"""
 
 function findPermutationOfLibrary()
     l= 3
@@ -59,6 +76,10 @@ function permute(l::Int64)
     return A          
 end
 
+"""-----------------------------------------------------------------------------------------------
+Index 
+-----------------------------------------------------------------------------------------------"""
+
 function getL(BS::BasisSet, l_Number::Int64)
     bsf = BS.basis[basisFunctionNumber]
     A = permute(bsf.l)
@@ -69,6 +90,9 @@ function getL(BS::BasisSet, l_Number::Int64)
 end
 
 function lengthIndex(BS::BasisSet)::Int
+    return BS.nbas
+end
+function lengthIndex2(BS::BasisSet)::Int
     result = 0
     for i in 1:length(BS.basis)
         l = BS.basis[i].l
@@ -77,20 +101,20 @@ function lengthIndex(BS::BasisSet)::Int
     return Int(result)
 end
 
-function getAtomData(i::Int64)
-    a = getAtomL(i)
-    basis = BS1.basis[a[1]]
+function getAtomData(BS::BasisSet, i::Int64)
+    a = getAtomL(BS, i)
+    basis = BS.basis[a[1]]
     l = basis.l
     l_xyz = permute(l)[a[2],:]
     return (a[1], basis.atom.Z , l , l_xyz, basis.atom.xyz, basis.coef , basis.exp)
 end 
 
-function getAtomL(I::Int64)
+function getAtomL(BS::BasisSet, I::Int64)
     j = 0
     atom = 1
 
-    for i in 1:length(BS1.basis)
-        l = BS1.basis[i].l
+    for i in 1:length(BS.basis)
+        l = BS.basis[i].l
         if I <= (j+factorial(l+2)/(factorial(l)*2))
             break
         else
@@ -103,11 +127,11 @@ function getAtomL(I::Int64)
     return (atom,LNumber)
 end
 
-function findIndex(Rx::Float64, Ry::Float64, Rz::Float64, lx::Int64, ly::Int64, lz::Int64 )
+function findIndex(BS::BasisSet, Rx::Float64, Ry::Float64, Rz::Float64, lx::Int64, ly::Int64, lz::Int64 )
     index = 0
-    for i in 1:length(BS1.basis)
-        if BS1.basis[i].atom.xyz == [Rx,Ry,Rz]
-            A = permute(BS1.basis[i].l)
+    for i in 1:length(BS.basis)
+        if BS.basis[i].atom.xyz == [Rx,Ry,Rz]
+            A = permute(BS.basis[i].l)
 
             for j in 1:size(A)[1]
                 index += 1
@@ -116,29 +140,20 @@ function findIndex(Rx::Float64, Ry::Float64, Rz::Float64, lx::Int64, ly::Int64, 
                 end
             end
         else
-            index += Int(factorial(BS1.basis[i].l+2)/(factorial(BS1.basis[i].l)*2))
+            index += Int(factorial(BS.basis[i].l+2)/(factorial(BS.basis[i].l)*2))
         end
     end
     println("No Atom at this position")
     return nothing
 end
 
-function splitIndex(I::Int64)
-    return (div(I-1,lengthIndex(BS1))+1, I-div(I-1,lengthIndex(BS1))*lengthIndex(BS1))
+function splitIndex(BS::BasisSet, I::Int64)
+    return (div(I-1,lengthIndex(BS))+1, I-div(I-1,lengthIndex(BS))*lengthIndex(BS))
 end
 
-function convert(g::QG.DiscretizedGrid, coordinate::NTuple{N,Float64}) where {N}
-    if g.includeendpoint
-        all(QG.grid_min(g) .<= coordinate .<= QG.grid_max(g)) ||
-            error("Bound Error: $(coordinate), min=$(grid_min(g)), max=$(QG.grid_max(g))")
-    else
-        all(QG.grid_min(g) .<= coordinate .< QG.grid_max(g)) ||
-            error("Bound Error: $(coordinate), min=$(QG.grid_min(g)), max=$(QG.grid_max(g))")
-    end
-    return QG._convert_to_scalar_if_possible(
-        ((coordinate .- QG.grid_min(g)) ./ QG.grid_step(g) .+ 1) .|> round .|> Int,
-    )
-end
+"""-----------------------------------------------------------------------------------------------
+Read input files and convert strings to arrays
+-----------------------------------------------------------------------------------------------"""
 
 function read_xyz(xyz_filename)
     out_str = ""
@@ -155,6 +170,25 @@ function read_xyz(xyz_filename)
         end
     end
     return (out_str, natoms)
+end
+
+function create_xyz(molecule_name::String)
+    outstr = ""
+    open("temp.txt") do file
+        count = 1
+        for line in eachline(file)
+            if count < 3
+                outstr *= line*"\n"
+            else
+                temp = split(line, " ", keepempty =false)
+                outstr *= temp[1]*"\t"*temp[2]*"\t"*temp[3]*"\t"*temp[4]*"\n"
+            end
+            count += 1
+        end
+    end
+    open(molecule_name*".txt", "w") do file 
+        write(file, outstr[1:end-2])
+    end
 end
 
 function toArray(str::String)
@@ -220,19 +254,106 @@ function splitH(str::String)
     return (C,H,O)
 end
 
+
+"""-----------------------------------------------------------------------------------------------
+Grid and bounds
+-----------------------------------------------------------------------------------------------"""
+
+function convert(g::QG.DiscretizedGrid, coordinate::NTuple{N,Float64}) where {N}
+    if g.includeendpoint
+        all(QG.grid_min(g) .<= coordinate .<= QG.grid_max(g)) ||
+            error("Bound Error: $(coordinate), min=$(grid_min(g)), max=$(QG.grid_max(g))")
+    else
+        all(QG.grid_min(g) .<= coordinate .< QG.grid_max(g)) ||
+            error("Bound Error: $(coordinate), min=$(QG.grid_min(g)), max=$(QG.grid_max(g))")
+    end
+    return QG._convert_to_scalar_if_possible(
+        ((coordinate .- QG.grid_min(g)) ./ QG.grid_step(g) .+ 1) .|> round .|> Int,
+    )
+end
+
 function getMaxima(A::Array)
     vmax = [maximum(A[:, i]) for i in 1:3]
     vmin = [minimum(A[:, i]) for i in 1:3]
     return (vmax,vmin)
 end
 
-function generateOutputName(input_name::String, i::Int64)
-    return s = input_name[1:end-4]*"_$i"*".png"
+function getOffset(BS::BasisSet, min::Vector{Float64}, max::Vector{Float64}, limit::Float64)
+
+    incr = 0.01
+
+    Off = Matrix{Float64}(undef, 2,3)
+    start = Vector{Float64}
+
+    for n in (-3,-2,-1,1,2,3)
+        dir = [0.,0.,0.]   
+        dir[abs(n)] = sign(n)
+        if n<0
+            start = min
+        else
+            start = max
+        end
+
+
+        offset = 0.0
+        enough = false
+        while !enough
+            offset += incr
+            enough = true 
+            for m in 1:lengthIndex(BS)
+                i,li,A,R1,l1 = parametersPhi(BS, m)
+
+                if abs(phi(A,l1,(start[abs(n)]-R1[abs(n)]+sign(n)*offset)*dir)) > limit
+                    enough = false
+                    break
+                end
+            end
+
+            if enough
+                break
+            end
+        end
+        
+        Off[Int(1.5+0.5*sign(n)), abs(n)] = offset
+    end 
+
+    Off = round.(Off, digits =2)
+    offsetmin = Off[1,:]
+    offsetmax = Off[2,:]
+    return (offsetmin, offsetmax)
 end
 
-function determineGridBounds(str::String)
-    xmin = getMaxima(toArray(input))[2]
-    xmax = getMaxima(toArray(input))[1]
-    a = abs.(xmax-xmin)
+function grid(BS::BasisSet, input::String, R::Int64)
+    tol = 10e-7
+    xmin_molecule = getMaxima(toArray(input))[1]
+    xmax_molecule = getMaxima(toArray(input))[2]
+    xmin = xmin_molecule - getOffset(BS, xmin_molecule, xmax_molecule, tol)[1]
+    xmax = xmax_molecule + getOffset(BS, xmin_molecule, xmax_molecule, tol)[2]
 
+    #shift = (xmax-xmin)/((2^R)-1)/(10^6)
+    return QG.DiscretizedGrid{3}(R, (xmin[1], xmin[2], xmin[3]), (xmax[1], xmax[2], xmax[3]))
+end
+
+
+"""-----------------------------------------------------------------------------------------------
+Class Config and constructors for grid and Basis 
+-----------------------------------------------------------------------------------------------"""
+
+
+function BasisSetConstructor(input::String, lib::Int64)
+    whichBasis = ("sto-3g", "def2-svp") 
+    return BasisSet(whichBasis[lib], read_xyz(input)[1], spherical=false, lib =:acsint)
+end
+
+struct Config
+    name::String
+    BS::BasisSet
+    grid::QG.Grid
+end
+
+function Config(input::String, lib::Int64, R::Int64)
+    name = input[1:end-4]
+    BS = BasisSetConstructor(input,lib)
+    g = grid(BS, input, R)
+    Config(name, BS, g)
 end
