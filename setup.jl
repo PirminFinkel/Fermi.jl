@@ -1,10 +1,10 @@
 using Fermi
 using GaussianBasis 
 using StaticArrays
-using Plots
 using LinearAlgebra
 using QuanticsTCI
-using TensorCrossInterpolation
+
+using Plots
 import QuanticsGrids as QG
 
 """-----------------------------------------------------------------------------------------------
@@ -154,6 +154,11 @@ end
 """-----------------------------------------------------------------------------------------------
 Read input files and convert strings to arrays
 -----------------------------------------------------------------------------------------------"""
+
+function read_json(filename::String)
+    json_string = read(filename, String)
+    return JSON.parse(json_string)
+end
 
 function read_xyz(xyz_filename)
     out_str = ""

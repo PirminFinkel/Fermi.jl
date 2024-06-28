@@ -1,16 +1,18 @@
 using Fermi
 using GaussianBasis 
 using StaticArrays
-using Plots
 using LinearAlgebra
 using QuanticsTCI
-import TensorCrossInterpolation as TCI
+
 using Profile
 using StatProfilerHTML
 using TCIITensorConversion
 using ITensors
+using JSON
+import TensorCrossInterpolation as TCI
 
 include("setup.jl")
+#include("nicePlots.jl")
 
 const ang2bohr = 1.8897261246257702
 
@@ -109,13 +111,13 @@ function phiGeneral(I::Int64, x::Vector)::Float64
     return phi(A,l1,x-R1)
 end
 
-function generalKernel(list::Vector{Int64})::Float64
-    x = collect(QG.quantics_to_origcoord(grid,collect(list[1:R])))
-    y = collect(QG.quantics_to_origcoord(grid2,collect(list[R+1:2*R])))
+function generalKernel(c::Config, list::Vector{Int64})::Float64
+    x = collect(QG.quantics_to_origcoord(c.grid,collect(list[1:c.grid.R])))
+    y = collect(QG.quantics_to_origcoord(c.grid,collect(list[c.grid.R+1:2*c.grid.R])))
     return u(x,y)
 end
 
-function u(x::Vector{Float64}, y::Vector{Float64})
+function u( x::Vector{Float64}, y::Vector{Float64})
     #return (x != y ? 1/norm((x-y).*ang2bohr) : 1)
     return 1/norm(x-y).*ang2bohr
 end
@@ -169,26 +171,6 @@ end
 Tensor cross interpolation to compress the functions 
 --------------------------------------------------"""
 
-function worstcase1(R::Int64)
-    worstcase = Vector{Float64}(undef,R)
-    for i in 1:Int(ceil(R/2))
-        worstcase[i] = 8^i
-        worstcase[R+1-i] = 8^i
-    end
-    worstcase
-end
-
-function worstcase2(R::Int64, lengthFirst::Int64)
-    localdims = fill(8, R+1)
-    localdims[1] = lengthFirst^2
-
-    worstcase = Vector{Float64}(undef,R)
-    for i in 1:R
-        worstcase[i] = min(prod(localdims[1:i]), prod(localdims[i:end]))
-    end
-    return worstcase
-end
-
 function fullCompress(c::Config, tol::Float64)
     R = c.grid.R
     localdims = fill(8, R+1)
@@ -196,60 +178,51 @@ function fullCompress(c::Config, tol::Float64)
 
     A_comp(list::Vector) = A(c, list)
 
-    cA = TensorCrossInterpolation.CachedFunction{Float64}(A_comp, localdims)
-    tci, ranks, errors = crossinterpolate2(Float64, cA, localdims; tolerance = tol)
-    return r = TensorCrossInterpolation.linkdims(tci)
-
-    worstcase = worstcase2(R, c.BS.nbas)
-
-    tick = 13
-    guide = 13
-
-    p = plot(1:length(localdims)-1, [worstcase, r], label = ["worstcase" "TCI ranks"],  yscale= :log10, legendfontsize=guide, xtickfontsize=tick, ytickfontsize=tick, xguidefontsize=guide, yguidefontsize=guide)
-    title!("TT rank of A, with R = $R, tol = $tol")
-    xlabel!("TT chain position")
-    ylabel!("rank")
-    savefig(p, generateOutputName(c.name, R, tol))
+    cA = TCI.CachedFunction{Float64}(A_comp, localdims)
+    tci, ranks, errors = TCI.crossinterpolate2(Float64, cA, localdims; tolerance = tol)
+    return TCI.linkdims(tci)
 end
 
-function makeTT(BS::BasisSet)
-    localdims = fill(8, R+1)
-    localdims[1] = lengthIndex(BS)^2
+function makeTT(c::Config, tol::Float64)
+    localdims = fill(8, c.grid.R+1)
+    localdims[1] = c.BS.nbas^2
+
+    A_comp(list::Vector{Int64}) = A(c, list) 
+    P_comp(list::Vector{Int64}) = P(c, list) 
     
     #Tensor A
-    cA = TensorCrossInterpolation.CachedFunction{Float64}(A, localdims)
-    tci_A, ranks_A, errors_A = crossinterpolate2(Float64, cA, localdims; tolerance = tol)
+    cA = TCI.CachedFunction{Float64}(A_comp, localdims)
+    tci_A = crossinterpolate2(Float64, cA, localdims; tolerance = tol)[1]
 
     #Tensor P 
-    cP = TensorCrossInterpolation.CachedFunction{Float64}(P, localdims)
-    tci_P, ranks_P, errors_P = crossinterpolate2(Float64, cP, localdims; tolerance = tol)
-
+    cP = TCI.CachedFunction{Float64}(P_comp, localdims)
+    tci_P = crossinterpolate2(Float64, cP, localdims; tolerance = tol)[1]
 
     return (tci_A, tci_P)
 end
 
-function makeGeneralTT(A_general::Function, B_general::Function, C_general::Function, basislength::Int64)
-
+function makeGeneralTT(c::Config, P_general::Function, K_general::Function, basislength::Int64)
+    R = c.grid.R
     localdims = fill(8, R+1)
     localdims[1] = basislength^2
     kerneldims = fill(8,2*R)
 
-    #Tensor A
-    cA = TensorCrossInterpolation.CachedFunction{Float64}(A_general, localdims)
-    tci_A, ranks_A, errors_A = crossinterpolate2(Float64, cA, localdims; tolerance = tol)
+    #Tensor P
+    P_comp(list::Vector{Int64}) = P_general(c, list)
+    cP = TCI.CachedFunction{Float64}(P_comp, localdims)
+    tci_P, ranks_P, errors_P = crossinterpolate2(Float64, cP, localdims; tolerance = tol)
 
-    #Tensor B 
-    cB = TensorCrossInterpolation.CachedFunction{Float64}(B_general, kerneldims)
-    tci_B, ranks_B, errors_B = crossinterpolate2(Float64, cB, kerneldims; tolerance = tol)
+    #Tensor K 
+    K_comp(list::Vector{Int64}) = K_general(c, list)
+    cK = TCI.CachedFunction{Float64}(K_comp, kerneldims)
+    tci_K, ranks_K, errors_K = crossinterpolate2(Float64, cK, kerneldims; tolerance = tol)
 
-    #Tensor C
-    cC = TensorCrossInterpolation.CachedFunction{Float64}(C_general, localdims)
-    tci_C, ranks_C, errors_C = crossinterpolate2(Float64, cC, localdims; tolerance = tol)
-
-    return (tci_A, tci_B, tci_C)
+    return (tci_P, tci_K)
 end
 
-function evaluateTT(tci_A, tci_P)
+function evaluateTT(grid::QG.Grid, tci_A, tci_P)
+    R = grid.R
+
     tt1 = TCI.TensorTrain(tci_A)
     M1 = ITensors.MPS(tt1)
 
@@ -267,11 +240,12 @@ function evaluateTT(tci_A, tci_P)
         result = M1[k]*(M2[k]*result)
     end
 
-    return Matrix(result, inds(result)[1], inds(result)[2])*norm(prod(xmax-xmin)*ang2bohr^3)/(2^(3*R))
+    return Matrix(result, inds(result)[1], inds(result)[2])*prod(collect(QG.grid_max(grid))-collect(QG.grid_min(grid)))*ang2bohr^3/(2^(3*R))
     #return Matrix(M, inds(M)[1], inds(M)[2])*norm(prod(xmax-xmin)*ang2bohr^3)/(2^(3*R))
 end
 
-function evaluateGeneralTT(tci_A, tci_B, tci_C)
+function evaluateGeneralTT(c::Config, tci_A, tci_B, tci_C)
+    R = c.grid.R
     mpsA = ITensors.MPS(TCI.TensorTrain(tci_A))
     mpsB = ITensors.MPS(TCI.TensorTrain(tci_B))
     mpsC= ITensors.MPS(TCI.TensorTrain(tci_C))
@@ -299,65 +273,7 @@ function evaluateGeneralTT(tci_A, tci_B, tci_C)
     result = mpsA[1]*result
 
     #M = ITensors.contract(ITA)*ITensors.contract(ITB)*ITensors.contract(ITC)
-    return Matrix(result, inds(result)[1], inds(result)[2])*norm(prod(xmax-xmin)*ang2bohr^3)/(2^(3*R))
-end
-
-
-
-"""-------------------------------------
-Plot the functions 
--------------------------------------"""
-
-function moleculePlot()
-    Hpoints = splitH(input)[2]
-    Cpoints = splitH(input)[1]
-    Opoints = splitH(input)[3]
-
-    plt3d = scatter(Opoints[:,1], Opoints[:,2], Opoints[:,3], seriestype=:scatter, markersize = 7, color = "red", label = "Oxygen")
-    scatter!(Hpoints[:,1],Hpoints[:,2], Hpoints[:,3], markersize = 3, color = "blue", label = "Hydrogen")
-    scatter!(Cpoints[:,1],Cpoints[:,2], Cpoints[:,3], markersize = 5, color = "yellow", label = "Carbon")
-    xlims!(xmin[1], xmax[1])
-    ylims!(xmin[2], xmax[2])
-    zlims!(xmin[3], xmax[3])
-
-    display(plt3d)
-end
-
-function atomPlot(BS::BasisSet, I::Int64)
-    limit = 1e-16
-    i,li,A,R1,l1 = parametersPhi(BS, I)
-    #R1 = round.(R1, digits=2)
-    xaxis1 = range(-3, 3, length = 1000)
-    xaxis2 = range(xmin[1], xmax[1], length = 1000)
-    ydata1 = [abs(phi(A,l1,[k,0.,0.]))>limit ? abs(phi(A,l1,[k,0.,0.])) : limit for k in xaxis1]
-    ydata2 = [abs(phi(A,l1,[k-R1[1],0.,0.]))>limit ? abs(phi(A,l1,[k-R1[1],0.,0.])) : limit for k in xaxis2]
-    ydata3 = [phi(A,l1,[k,0.,0.]) for k in xaxis1]
-    ydata4 = [phi(A,l1,[k-R1[1],0.,0.]) for k in xaxis2]
-    plt1 = plot(xaxis1, ydata3, label = "Basis function $i", xlabel = "r in angstrom", ylabel = "φ(r)")
-    plt2 = plot(xaxis1, abs.(ydata1), label = "Basis function $i",yscale = :log10, xlabel = "r in angstrom", ylabel = "φ(r)")
-    plt3 = plot(xaxis2, ydata4, label = "Basis function $i", xlabel = "r in angstrom", ylabel = "φ(r)")
-    plt4 = plot(xaxis2, abs.(ydata2), label = "Basis function $i",yscale = :log10, xlabel = "r in angstrom", ylabel = "φ(r)")
-    plt = plot(plt1,plt2,plt3,plt4, layout=(2,2), legend=false, dpi = 600)
-    display(plt)
-    #plt = plot(plt1,plt2, layout=(1,2), legend=false, dpi = 600, title = "Basisfunction at $R1 with l_xyz = $l1",  titlefont = font(12))
-end
-
-function twoAtomPlot(BS::BasisSet, I::Int64, J::Int64)
-    i,li,A,R1,l1 = parametersPhi(BS, I)
-    j,lj,B,R2,l2 = parametersPhi(BS, J)
-    #R1 = round.(R1, digits=2)
-    step = norm((R1-R2)/1000)*ang2bohr
-    xaxis1 = range(-1000*step, 2000*step, length = 3001)
-    ydata1 = [phi(A,l1,(R2-R1)*k/1000)*phi(B,l2,(R1-R2+(R2-R1)*k/1000)) for k in -1000:1:2000]
-    ydata2 = [phi(A,l1, (R2-R1)*k/1000) for k in -1000:1:2000]
-    ydata3 = [phi(B,l2,(R1-R2+(R2-R1)*k/1000)) for k in -1000:1:2000]
-    plt1 = plot(xaxis1,[ydata2,ydata3], label = ["Basis function $i","Basis function $j"], xlabel = "r in angstrom", ylabel = "φ(r)")
-    plt2 = plot(xaxis1,[norm.(ydata2),norm.(ydata3)], label = ["Basis function $i","Basis function $j"],yscale =:log10, xlabel = "r in angstrom", ylabel = "φ(r)")
-    plt3 = plot(xaxis1, ydata1, label = "overlap", xlabel = "r in angstrom", ylabel = "φ(r)")
-    plt4 = plot(xaxis1, norm.(ydata1), label = "overlap",yscale = :log10, xlabel = "r in angstrom", ylabel = "φ(r)")
-    plt = plot(plt1,plt3, layout=(1,2), legend=false, dpi = 600)
-    display(plt)
-    #plt = plot(plt1,plt2, layout=(1,2), legend=false, dpi = 600, title = "Basisfunction at $R1 with l_xyz = $l1",  titlefont = font(12))
+    return Matrix(result, inds(result)[1], inds(result)[2])*prod(collect(QG.grid_max(grid))-collect(QG.grid_min(grid)))*ang2bohr^3/(2^(3*R))
 end
 
 """-------------------------------------------------------------
@@ -443,7 +359,7 @@ function compressPhi(c::Config, tol::Float64)
 
                 p(list::Vector) = phi(A,l1,collect(QG.quantics_to_origcoord(c.grid, list))-R1)*phi(B,l2,collect(QG.quantics_to_origcoord(c.grid, list))-R2)
 
-                cp = TensorCrossInterpolation.CachedFunction{Float64}(p, localdims)
+                cp = TCI.CachedFunction{Float64}(p, localdims)
                 pivot3 = collect(QG. origcoord_to_quantics(c.grid,Tuple(Float64(x) for x in (R1+R2)/2)))
                 tci = crossinterpolate2(Float64, cp, localdims, [pivot3]; tolerance = tol)[1]
 
@@ -516,9 +432,27 @@ end
 
 "-----------------------------------------------------------------------------------------------------------------------------"
 
-function main()
-    mol1 = ("hydrogen","water","ethane", "propanol", "glucose")
-    mol = ("hydrogen",)
+function analyticTime()
+    mol = ("hydrogen", "water". "propanol", "ethane", "glucose")
+    mol = ("hydrogen")
+
+    dict = Dict()
+    for n in mol
+        for k in 1:2
+            BS = BasisSetConstructor(mol[n]*".txt", k)
+            time = @time ERI_2e4c(BS)
+            dict[n*"$k"] = time
+        end
+    end
+
+    open("analytic.json","w") do file
+        write(file, JSON.json(dict))
+    end
+end
+
+function largeMolecules()
+    mol = ("hydrogen","water","ethane", "propanol", "glucose")
+    #mol = ("hydrogen",)
     v = Vector{Config}(undef,4*length(mol))
     for n in eachindex(mol)
         for m in (1,2)
@@ -527,9 +461,20 @@ function main()
         end
     end
 
+    daten = Dict() 
     for n in eachindex(v)
         c = v[n]
-        t= @elapsed ranks = fullCompress(c,1e-7)
-        println(ranks ,t)
+        time = @elapsed ranks = fullCompress(c,1e-7)
+        daten[c.name*"$(c.grid.R)"*"$(2-n%2)"] = (time,ranks)
+    end
+
+    open("daten.json","w") do file
+        write(file, JSON.json(daten))
     end
 end
+
+#largeMolecules()
+
+open("daten.json","w") do file
+        write(file, JSON.json([1,2,3]))
+    end
