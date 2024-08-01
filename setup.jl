@@ -1,11 +1,19 @@
-using Fermi
+# using Fermi
 using GaussianBasis 
 using StaticArrays
 using LinearAlgebra
 using QuanticsTCI
+using JSON
 
-using Plots
 import QuanticsGrids as QG
+import TensorCrossInterpolation as TCI
+
+#=
+using Profile
+using StatProfilerHTML
+using TCIITensorConversion
+using ITensors
+=#
 
 """-----------------------------------------------------------------------------------------------
 Helper functions
@@ -328,6 +336,62 @@ function getOffset(BS::BasisSet, min::Vector{Float64}, max::Vector{Float64}, lim
     return (offsetmin, offsetmax)
 end
 
+function get_perfect_P_grid(I::Int64, J::Int64, BS::BasisSet)
+     
+    i,li,A,R1,l1 = parametersPhi(BS, J)
+    j,lj,B,R2,l2 = parametersPhi(BS, I)
+    f1(r) = phi(A, l1, r)
+    f2(r) = phi(B, l2, r)
+
+    incr = 0.1
+
+    Off = zeros(Float64, 2,3)
+    start = Vector{Float64}
+
+    for n in (0,1,2)
+        for m in (1,2)
+            sig = 2*m-3
+
+            offset = 0.0
+            enough = false
+            while !enough
+                Off[n%3+1,m] += incr*sig
+                enough = true 
+                
+                for k1 in range(Off[(n+1)%3+1,1], Off[(n+1)%3+1,2], length = 5)
+                    for k2 in range(-Off[(n+2)%3+1,1], Off[(n+2)%3+1,2], lenght = 5)
+
+                        r = [0.,0.,0.]
+                        r[n%3+1] = Off[n%3+1,m]
+                        r[(n+1)%3+1] = k1 
+                        r[(n+2)%3+1] = k2 
+
+                        if abs(P(r)) > limit
+                            enough = false
+                            break
+                        end
+                        if !enough
+                            break
+                        end
+                    end
+                    if !enough
+                        break 
+                    end
+                end
+
+                if enough
+                    break
+                end
+            end
+            
+        end 
+
+        return Off
+        offsetmin = Off[:,1]
+        offsetmax = Off[:,2]
+        return (offsetmin, offsetmax)
+end
+
 function grid(BS::BasisSet, input::String, R::Int64)
     tol = 10e-7
     xmin_molecule = getMaxima(toArray(input))[1]
@@ -336,7 +400,7 @@ function grid(BS::BasisSet, input::String, R::Int64)
     xmax = xmax_molecule + getOffset(BS, xmin_molecule, xmax_molecule, tol)[2]
 
     #shift = (xmax-xmin)/((2^R)-1)/(10^6)
-    return QG.DiscretizedGrid{3}(R, (xmin[1], xmin[2], xmin[3]), (xmax[1], xmax[2], xmax[3]))
+    return QG.DiscretizedGrid{3}(R, (xmin[1], xmin[2], xmin[3]), (xmax[1], xmax[2], xmax[3]); includeendpoint=true)
 end
 
 
@@ -361,4 +425,17 @@ function Config(input::String, lib::Int64, R::Int64)
     BS = BasisSetConstructor(input,lib)
     g = grid(BS, input, R)
     Config(name, BS, g)
+end
+
+
+
+function number_Orbitals()
+    mol = ("hydrogen","water","ethane", "propanol", "glucose")
+
+    for n in eachindex(mol)
+        for m in (1,2)
+            c = Config(mol[n]*".txt",m, 5)
+            println(c.name, " : ", c.BS.nbas)
+        end
+    end
 end

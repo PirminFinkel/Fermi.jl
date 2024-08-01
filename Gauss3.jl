@@ -1,24 +1,12 @@
-using Fermi
-using GaussianBasis 
-using StaticArrays
-using LinearAlgebra
-using QuanticsTCI
-
-using Profile
-using StatProfilerHTML
-using TCIITensorConversion
-using ITensors
-using JSON
-import TensorCrossInterpolation as TCI
-
 include("setup.jl")
-#include("nicePlots.jl")
+include("nicePlots.jl")
 
 const ang2bohr = 1.8897261246257702
 
 """-------------------------
 Here we define our functions
 -------------------------"""
+
 #Basis function
 function phi(BS::BasisSet, numberBasisfunction::Int64, l_xyz::Int64, r::Vector{Float64})
     R = BS.basis[numberBasisfunction].atom.xyz
@@ -28,7 +16,7 @@ function phi(BS::BasisSet, numberBasisfunction::Int64, l_xyz::Int64, r::Vector{F
     L = permute(basisfunction.l)
     l = L[l_xyz,:]
 
-    result = 0
+    result = 0.
     for i in 1:length(basisfunction.coef)
         result += basisfunction.coef[i]*exp(-basisfunction.exp[i]*(r[1]^2+r[2]^2+r[3]^2))
     end
@@ -49,13 +37,13 @@ function phi(coef::AbstractArray, l_xyz::Vector{Int64}, r::AbstractVector)
 end
 
 #Analytic integral
-function a(BS::BasisSet, r::Vector{Float64}, i::Int64, j::Int64)
+function a(BS::BasisSet, r::AbstractVector, i::Int64, j::Int64)
     fakeatom = [GaussianBasis.Atom(-1, 1, r)]
     result = Coulomb_Integral(BS, i, j, fakeatom)
     return result
 end
 
-function Coulomb_Integral(BS::BasisSet, i::Int64, j::Int64, atom::Vector{<:Atom}) #choose two Basis functions from the set 
+function Coulomb_Integral(BS::BasisSet, i::Int64, j::Int64, atom::Vector{<:GaussianBasis.Atom}) #choose two Basis functions from the set 
     out = zeros(GaussianBasis.num_basis(BS.basis[i]), GaussianBasis.num_basis(BS.basis[j]))
     GaussianBasis.generate_V_pair!(out, BS.basis[i], BS.basis[j], atom)
     return out
@@ -174,12 +162,16 @@ Tensor cross interpolation to compress the functions
 function fullCompress(c::Config, tol::Float64)
     R = c.grid.R
     localdims = fill(8, R+1)
-    localdims[1] = lengthIndex(c.BS)^2
+    L = c.BS.nbas
+    localdims[1] = L^2
 
     A_comp(list::Vector) = A(c, list)
 
+    #R1 = Tuple(c.BS.basis[getAtomL(c.BS, L)[1]].atom.xyz)
+    #pivot = [collect(QG.origcoord_to_quantics(c.grid, R1))]
+
     cA = TCI.CachedFunction{Float64}(A_comp, localdims)
-    tci, ranks, errors = TCI.crossinterpolate2(Float64, cA, localdims; tolerance = tol)
+    tci, ranks, errors = TCI.crossinterpolate2(Float64, cA, localdims; tolerance = tol) #initialpivot [[1,1,...]] without any keyword
     return TCI.linkdims(tci)
 end
 
@@ -276,6 +268,41 @@ function evaluateGeneralTT(c::Config, tci_A, tci_B, tci_C)
     return Matrix(result, inds(result)[1], inds(result)[2])*prod(collect(QG.grid_max(grid))-collect(QG.grid_min(grid)))*ang2bohr^3/(2^(3*R))
 end
 
+function compress_P(c::Config, tol::Float64)
+
+    R = c.grid.R
+
+    localdims = fill(8,R+1)
+    localdims[1] = c.BS.nbas^2
+    fun(list::Vector{Int64}) = P(c, list)
+
+    firstpivot = ones(Int,R+1)
+    firstpivot[2] = 8
+    TCI.optfirstpivot(fun, localdims, firstpivot )
+
+    cf = TCI.CachedFunction{Float64}(fun, localdims)
+    tci, ranks, errors = TCI.crossinterpolate2(Float64, cf, localdims, [firstpivot]; tolerance = tol) #initialpivot [[1,1,...]] without any keyword
+    #print("Ranks: ", TCI.linkdims(tci))
+    return tci
+end
+
+function compress_P_fixed_orbital(c::Config, I::Int64, tol::Float)
+    R = c.grid.R
+
+    localdims = fill(8,R)
+    fun(list::Vector{Int64}) = P(c,[ I, list...])
+
+    firstpivot = ones(Int,R)
+    firstpivot[1] = 8
+    TCI.optfirstpivot(fun, localdims, firstpivot )
+
+    cf = TCI.CachedFunction{Float64}(fun, localdims)
+    tci, ranks, errors = TCI.crossinterpolate2(Float64, cf, localdims, [firstpivot]; tolerance = tol) #initialpivot [[1,1,...]] without any keyword
+    #print("Ranks: ", TCI.linkdims(tci))
+    return tci
+end
+
+
 """-------------------------------------------------------------
 We define a test function, to check our functions on correctness
 -------------------------------------------------------------"""
@@ -309,6 +336,7 @@ function test_A(c::Config)
         ana = a(c.BS,x, i,j)[li,lj]
         
         v[k] = abs.(num-ana)
+        println(v[k])
 
     end
 
@@ -343,34 +371,6 @@ function test_phi(c::Config)
     compareResults2(sum(result)/prod(size(result)), maximum(result))
 end
 
-function compressPhi(c::Config, tol::Float64)
-    R = c.grid.R
-    I=1
-    localdims = fill(8, R)
-    N = lengthIndex(c.BS)
-    num = zeros(Float64, N,N)
-    
-    for n in 1:N
-        for m in 1:N
-            if m>=n 
-
-                i,li,A,R1,l1 = parametersPhi(c.BS, n)
-                j,lj,B,R2,l2 = parametersPhi(c.BS, m)
-
-                p(list::Vector) = phi(A,l1,collect(QG.quantics_to_origcoord(c.grid, list))-R1)*phi(B,l2,collect(QG.quantics_to_origcoord(c.grid, list))-R2)
-
-                cp = TCI.CachedFunction{Float64}(p, localdims)
-                pivot3 = collect(QG. origcoord_to_quantics(c.grid,Tuple(Float64(x) for x in (R1+R2)/2)))
-                tci = crossinterpolate2(Float64, cp, localdims, [pivot3]; tolerance = tol)[1]
-
-                num[n,m] = num[m,n] = sum(tci)*prod(collect(QG.grid_max(c.grid))-collect(QG.grid_min(c.grid)))*ang2bohr^3/(2^(3*R))
-            end
-        end
-    end
-
-    ana = overlap(c.BS, c.BS)
-    return num-ana
-end
 
 function test_total(c::Config)
     N = 20
@@ -413,6 +413,35 @@ function test_P(c::Config)
     compareResults2(sum(v)/N, maximum(v))
 end
 
+function compressPhi(c::Config, tol::Float64)
+    R = c.grid.R
+    I=1
+    localdims = fill(8, R)
+    N = lengthIndex(c.BS)
+    num = zeros(Float64, N,N)
+    
+    for n in 1:N
+        for m in 1:N
+            if m>=n 
+
+                i,li,A,R1,l1 = parametersPhi(c.BS, n)
+                j,lj,B,R2,l2 = parametersPhi(c.BS, m)
+
+                p(list::Vector) = phi(A,l1,collect(QG.quantics_to_origcoord(c.grid, list))-R1)*phi(B,l2,collect(QG.quantics_to_origcoord(c.grid, list))-R2)
+
+                cp = TCI.CachedFunction{Float64}(p, localdims)
+                pivot3 = collect(QG. origcoord_to_quantics(c.grid,Tuple(Float64(x) for x in (R1+R2)/2)))
+                tci = crossinterpolate2(Float64, cp, localdims, [pivot3]; tolerance = tol)[1]
+
+                num[n,m] = num[m,n] = sum(tci)*prod(collect(QG.grid_max(c.grid))-collect(QG.grid_min(c.grid)))*ang2bohr^3/(2^(3*R))
+            end
+        end
+    end
+
+    ana = overlap(c.BS, c.BS)
+    return num-ana
+end
+
 function generateAna(BS::BasisSet)
     N = lengthIndex(BS)^2
     Arr = Matrix{Float64}(undef,N,N)
@@ -432,49 +461,74 @@ end
 
 "-----------------------------------------------------------------------------------------------------------------------------"
 
-function analyticTime()
-    mol = ("hydrogen", "water". "propanol", "ethane", "glucose")
-    mol = ("hydrogen")
 
-    dict = Dict()
-    for n in mol
-        for k in 1:2
-            BS = BasisSetConstructor(mol[n]*".txt", k)
-            time = @time ERI_2e4c(BS)
-            dict[n*"$k"] = time
-        end
-    end
-
-    open("analytic.json","w") do file
-        write(file, JSON.json(dict))
-    end
-end
-
-function largeMolecules()
+function largeMolecules(R::Int64)
     mol = ("hydrogen","water","ethane", "propanol", "glucose")
+    #mol = ("hydrogen","ethane", "propanol", "glucose")
     #mol = ("hydrogen",)
-    v = Vector{Config}(undef,4*length(mol))
+    v = Vector{Config}(undef,2*length(mol))
+
+    println("Create basis sets and grids (PF)")
     for n in eachindex(mol)
         for m in (1,2)
-            v[4*(n-1)+m] =  Config(mol[n]*".txt",m, 5)
-            v[4*(n-1)+m+2] = Config(mol[n]*".txt",m,7)
+            v[2*(n-1)+m] =  Config(mol[n]*".txt",m, R)
+            #v[4*(n-1)+m+2] = Config(mol[n]*".txt",m,7)
         end
     end
 
     daten = Dict() 
+    println("Run has started (PF)")
     for n in eachindex(v)
         c = v[n]
-        time = @elapsed ranks = fullCompress(c,1e-7)
-        daten[c.name*"$(c.grid.R)"*"$(2-n%2)"] = (time,ranks)
+        time = @elapsed ranks = fullCompress(c,1e-5)
+        daten[c.name*"$(c.grid.R)"*"$(2-n%2)"] = (time,ranks,c.BS.nbas)
+        println(c.name*"$(c.grid.R)"*"$(2-n%2)  with the runtime: $(time) s and the ranks: ", ranks, "Number of Orbitals: ", c.BS.nbas); flush(stdout)
+        #run(`echo "$(c.name)$(c.grid.R)$(2-n%2) with the runtime: $(time) s and the ranks: $(ranks)"`)
     end
 
     open("daten.json","w") do file
         write(file, JSON.json(daten))
     end
+
+    println("Run successfull (PF)")
 end
 
-#largeMolecules()
-
-open("daten.json","w") do file
-        write(file, JSON.json([1,2,3]))
+function compress_multiple_P(name::String, lib::Int64, tol::Int64)
+    
+    daten = Dict()
+    for R in (4,6,8)
+        c = Config(name, lib, R)
+        time = @elapsed ranks = TCI.linkdims(compress_P(c, 10.0^tol)) 
+        daten["$R"] = (time, ranks)
+        println("$(c.name), lib = $lib, nbas = $(c.BS.nbas), R = $(c.grid.R), tol = $tol, time = $time, ranks =\t$ranks"); flush(stdout) 
     end
+
+    open("./daten/P_$(name)$(tol).json","w") do file
+        write(file, JSON.json(daten))
+    end
+
+    return daten
+end
+ 
+function myplot()
+    c = Config("water.txt",2,5)
+
+    #plt = plot_function_axis(c.BS, 1)
+    plt = plot_P(3,16,c.BS) 
+    #plt = plot_multiple_in_x(c.BS, (2,3,4,7,10), "O")
+    #plt = plot_multiple_in_x(c.BS, (16,17,18), "H")
+    display(plt)
+end
+
+function main()
+    println("Start programm") 
+
+    compress_multiple_P("propanol.txt", 2, -5)
+
+    println("run successfull")
+end
+ 
+#main()
+myplot()
+#largeMolecules(5)
+#test_json()
