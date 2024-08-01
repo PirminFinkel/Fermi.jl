@@ -45,31 +45,6 @@ end
 Permutation
 -----------------------------------------------------------------------------------------------"""
 
-function findPermutationOfLibrary()
-    l= 3
-    am1 = l
-    am2 = l
-
-    N1 = binomial(l+2,2)
-    out = zeros(Int64,N1,N1)
-
-    index1 = 1
-    for l1 in am1 : -1 : 0
-        for n1 in 0 : am1 - l1
-            m1 = am1 - l1 - n1
-            index2 = 1
-            for l2 in am2 : -1 : 0
-                for n2 in 0 : am2 - l2
-                    m2 = am2 - l2 - n2
-                    out[index1 + N1*(index2-1)] = 1000000*7+100000*l1+10000*m1+1000*n1+100*l2+10*m2+n2
-                    index2 += 1
-                end
-            end
-            index1 += 1
-        end
-    end
-end
-
 function permute(l::Int64)
     A = Array{Int64,2}(undef, binomial(l+2,2),3)
     i = 1
@@ -100,22 +75,6 @@ end
 function lengthIndex(BS::BasisSet)::Int
     return BS.nbas
 end
-function lengthIndex2(BS::BasisSet)::Int
-    result = 0
-    for i in 1:length(BS.basis)
-        l = BS.basis[i].l
-        result += factorial(l+2)/(factorial(l)*2)
-    end
-    return Int(result)
-end
-
-function getAtomData(BS::BasisSet, i::Int64)
-    a = getAtomL(BS, i)
-    basis = BS.basis[a[1]]
-    l = basis.l
-    l_xyz = permute(l)[a[2],:]
-    return (a[1], basis.atom.Z , l , l_xyz, basis.atom.xyz, basis.coef , basis.exp)
-end 
 
 function getAtomL(BS::BasisSet, I::Int64)
     j = 0
@@ -133,26 +92,6 @@ function getAtomL(BS::BasisSet, I::Int64)
     LNumber = I-j
 
     return (atom,LNumber)
-end
-
-function findIndex(BS::BasisSet, Rx::Float64, Ry::Float64, Rz::Float64, lx::Int64, ly::Int64, lz::Int64 )
-    index = 0
-    for i in 1:length(BS.basis)
-        if BS.basis[i].atom.xyz == [Rx,Ry,Rz]
-            A = permute(BS.basis[i].l)
-
-            for j in 1:size(A)[1]
-                index += 1
-                if [lx,ly,lz] == A[j,:]
-                    return index
-                end
-            end
-        else
-            index += Int(factorial(BS.basis[i].l+2)/(factorial(BS.basis[i].l)*2))
-        end
-    end
-    println("No Atom at this position")
-    return nothing
 end
 
 function splitIndex(BS::BasisSet, I::Int64)
@@ -185,25 +124,6 @@ function read_xyz(xyz_filename)
     return (out_str, natoms)
 end
 
-function create_xyz(molecule_name::String)
-    outstr = ""
-    open("temp.txt") do file
-        count = 1
-        for line in eachline(file)
-            if count < 3
-                outstr *= line*"\n"
-            else
-                temp = split(line, " ", keepempty =false)
-                outstr *= temp[1]*"\t"*temp[2]*"\t"*temp[3]*"\t"*temp[4]*"\n"
-            end
-            count += 1
-        end
-    end
-    open(molecule_name*".txt", "w") do file 
-        write(file, outstr[1:end-2])
-    end
-end
-
 function toArray(str::String)
     daten = split(read_xyz(str)[1], "\n")
     pop!(daten)
@@ -219,52 +139,6 @@ function toArray(str::String)
         end
     end
     return A
-end
-
-function splitH(str::String)
-    daten = split(read_xyz(str)[1], "\n")
-    natoms = read_xyz(str)[2]
-    A = Array{String }(undef, natoms, 4)
-
-    #generate Matrix
-    for i in eachindex(daten)
-        v = split(daten[i], " " , keepempty = false)
-        for j in eachindex(v)
-            A[i,j] = v[j]
-        end
-    end
-    A = A[sortperm(A[:, 1]), :]
- 
-    #Split the Matrix
-    h = 0
-    for i in eachindex(A[:,1])
-        if A[i,1] == "H" 
-            h = i
-            break
-        end
-    end
-
-    o = 0
-    for i in eachindex(A[:,1])
-        if A[i,1] == "O" 
-            o = i
-            break
-        end
-    end
-    
-    #Change Type to Float64
-    A = A[:,2:end]
-    
-    B = Array{Float64}(undef,size(A))
-    for i in eachindex(A)
-        B[i] = parse(Float64, A[i])
-    end
-
-    C = B[1:h-1,:] 
-    H = B[h:o-1,:] 
-    O = B[o:end,:] 
-
-    return (C,H,O)
 end
 
 
@@ -359,7 +233,7 @@ function get_perfect_P_grid(I::Int64, J::Int64, BS::BasisSet)
                 enough = true 
                 
                 for k1 in range(Off[(n+1)%3+1,1], Off[(n+1)%3+1,2], length = 5)
-                    for k2 in range(-Off[(n+2)%3+1,1], Off[(n+2)%3+1,2], lenght = 5)
+                    for k2 in range(-Off[(n+2)%3+1,1], Off[(n+2)%3+1,2], length = 5)
 
                         r = [0.,0.,0.]
                         r[n%3+1] = Off[n%3+1,m]
@@ -385,11 +259,13 @@ function get_perfect_P_grid(I::Int64, J::Int64, BS::BasisSet)
             end
             
         end 
+    end
 
-        return Off
-        offsetmin = Off[:,1]
-        offsetmax = Off[:,2]
-        return (offsetmin, offsetmax)
+    return Off
+    offsetmin = Off[:,1]
+    offsetmax = Off[:,2]
+    return (offsetmin, offsetmax)
+    
 end
 
 function grid(BS::BasisSet, input::String, R::Int64)
@@ -408,16 +284,15 @@ end
 Class Config and constructors for grid and Basis 
 -----------------------------------------------------------------------------------------------"""
 
-
-function BasisSetConstructor(input::String, lib::Int64)
-    whichBasis = ("sto-3g", "def2-svp") 
-    return BasisSet(whichBasis[lib], read_xyz(input)[1], spherical=false, lib =:acsint)
-end
-
 struct Config
     name::String
     BS::BasisSet
     grid::QG.Grid
+end
+
+function BasisSetConstructor(input::String, lib::Int64)
+    whichBasis = ("sto-3g", "def2-svp") 
+    return BasisSet(whichBasis[lib], read_xyz(input)[1], spherical=false, lib =:acsint)
 end
 
 function Config(input::String, lib::Int64, R::Int64)
@@ -425,17 +300,4 @@ function Config(input::String, lib::Int64, R::Int64)
     BS = BasisSetConstructor(input,lib)
     g = grid(BS, input, R)
     Config(name, BS, g)
-end
-
-
-
-function number_Orbitals()
-    mol = ("hydrogen","water","ethane", "propanol", "glucose")
-
-    for n in eachindex(mol)
-        for m in (1,2)
-            c = Config(mol[n]*".txt",m, 5)
-            println(c.name, " : ", c.BS.nbas)
-        end
-    end
 end
